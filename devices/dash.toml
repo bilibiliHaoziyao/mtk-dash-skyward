@@ -1,0 +1,479 @@
+# Skyward 设备配置骨架 — REDMI Turbo 5 Max (dash)
+#
+# 状态：v3 实测坐实版。全部关键字段来自 24 份真机探测文件（dash_probe/），
+#       与官方 OTA / vendor_boot / OrangeFox ramdisk 的静态解包交叉验证。
+#
+# 数据来源标注：
+#   [实测]       = 真机 adb / 官方 OTA 解包 / OrangeFox ramdisk 直接读出并校验
+#   [实测-推断]  = 实测值存在，归属/含义由证据链推断，待一条命令复核
+#   [推测]       = 按同代机型或 MTK 平台惯例推断
+#
+# 更新记录
+#   v1  2026-11-14  初版：官方 OTA + OrangeFox ramdisk 静态解包
+#   v2  2026-11-14  并入真机 adb：完整分区表、vendor_dlkm 模块清单、槽位 _a
+#   v3  2026-11-14  并入 dash_probe/ 24 份文件：ready_service 全套坐实（全 AIDL）、
+#                   modules.load 全文、density=520、wlan 驱动二选一定案、
+#                   解锁状态澄清（伪回锁）、FBE+metadata 加密坐实
+#
+# ⚠️ 最重要的一条：本机没有独立的 recovery 分区。
+#    官方 OTA 的 40 个物理分区不含 recovery；真机 /dev/block/by-name/ 实测确认，
+#    只有 vendor_boot_a(sdc38) / vendor_boot_b(sdc73)。
+#    recovery 程序位于 vendor_boot 的 vendor ramdisk table（v4 header，
+#    entry type=2 RECOVERY, name="recovery"）。因此 [stock] 段在上游 skyward-pack
+#    里语义不成立，打包器必须改造，见《适配改造清单.md》。
+#    刷入方式：`fastboot flash vendor_boot`（双槽）。
+#
+# ⚠️ 解锁状态（v3 澄清，重要）：
+#    真机 prop 显示 ro.boot.flash.locked=1 / ro.boot.verifiedbootstate=green /
+#    ro.boot.vbmeta.device_state=locked / ro.secureboot.lockstate=locked，
+#    这是用户做的**伪回锁**（KernelSU root 伪装，context=u:r:ksu:s0）。
+#    用户确认真实 BL 已解锁。含义：
+#      - fastboot 层面可正常刷写 vendor_boot；
+#      - 解锁状态下 bootloader 不强制校验改过的 ramdisk，Skyward 镜像可启动；
+#      - 系统内 getprop 读到的 locked 均为伪装，勿据此判断解锁状态；
+#      - 复核真实状态用 `fastboot getvar unlocked`（bootloader 模式）。
+#
+# ⚠️ binder 协议（v3 修正，推翻 v1/v2 的判断）：
+#    keymint / gatekeeper / weaver / secure_element / boot 全部是 **AIDL**。
+#    三重证据：① /vendor/etc/vintf/manifest/*.xml 里 <hal format="aidl">；
+#              ② service list 注册名为点号 AIDL 命名（xxx.IYyy/instance）；
+#              ③ lshal 的 "HIDL binderized services" 段为空（本机几乎无 HIDL 服务）。
+#    二进制文件名里的 `@3.0`、`@1.2` 只是厂商沿用的历史命名，不代表 HIDL 协议。
+#    结论：上游 skyward-programs 的 AIDL binder 绑定路径可直接沿用，
+#    v1/v2 里「要为 HIDL 改绑定代码」的改造项撤销，工作量显著下降。
+
+[device]
+codename = "dash"
+brand = "Redmi"
+model = "REDMI Turbo 5 Max"
+ab = true                                             # [实测] vendor_boot_a/b、boot_a/b 等成对存在
+soc = { hans = "天玑 9500s 移动平台", hant = "天璣 9500s 行動平台", en = "MediaTek Dimensity 9500s (mt6991)" }
+os_version_prop = "ro.mi.os.version.incremental"      # [实测] 当前值 OS4.0.4.0.XPLCNXM，与 OTA 包严格一致
+# v10 / xaga 移植：本机无独立 recovery 分区，recovery 位于 vendor_boot 的
+# RECOVERY ramdisk（v4 header，entry type=2）。见文件顶部第 18-24 行。
+recovery_partition = "vendor_boot"
+# v10 / xaga 移植：recovery 的 init 不启动 servicemanager，由 Skyward 在
+# bring_up() 开头自己起一次；发布服务描述后再重启它会把已注册的 HAL 全冲掉。
+restart_service_directory = false
+# [实测] 当前活动槽：ro.boot.slot_suffix = _a
+# [实测] ro.board.platform=mt6991 / ro.hardware=mt6991 / ro.hardware.gatekeeper=mitee
+# [实测] Android 17（SDK 37），fingerprint Redmi/dash/dash:17/CP2A.260605.016/OS4.0.4.0.XPLCNXM:user/release-keys
+# [实测] root = KernelSU（su -c id → uid=0 context=u:r:ksu:s0）
+
+[display]
+# [实测] wm size: Physical size: 1280x2772；wm density: Physical density: 520；
+#        ro.sf.lcd_density=520。⚠️ v1/v2 从 warsaw.toml 沿用的 480 是错的，已改。
+width = 1280
+height = 2772
+density = 520
+diagonal = 6.83
+corner_radius = 170                                   # [待抓] HyperOS 设置页圆角，仍需实测
+# v10 / xaga 移植：面板上电后不切最高刷新率。xaga 的 MTK DRM 在 144Hz 切档
+# 会撕裂；dash 同为 MTK DRM，显式关掉，避免引入新的显示变量。
+fastest_refresh = false
+
+[modules]
+# [实测] 官方 fstab.emmc：vendor_dlkm / odm_dlkm / system_dlkm 均为逻辑分区。
+#
+# 关键（v5）：sources 里绝不能写 odm_dlkm。skyward 的 source_dir() 对不认识
+# 的来源直接 bail!，而 bring_up() 里是 collect::<Result<Vec<_>>>()? ——
+# 一个未知来源就让整段设备初始化失败：模块一个都不加载 → 没有 /dev/dri/card0
+# → 黑屏。前几版黑屏的直接原因就在这里。本轮已给 source_dir 补上 odm_dlkm
+# 支持，但配置仍不写它：dash 的模块全在 vendor_boot 的 platform ramdisk 里。
+sources = ["vendor_boot", "vendor_dlkm", "vendor"]
+#
+# 实测：platform ramdisk 自带 lib/modules/modules.load.recovery（264 行），
+# 是原厂 recovery(fastbootd) 的完整加载表，显示链路关键行：
+#     98  mtk_panel_ext.ko
+#     99  panel-p10u-42-02-0a-dsc-vdo.ko
+#    100  panel-p10u-36-02-0b-dsc-vdo.ko
+#    104  mediatek-drm.ko        ← /dev/dri/card0 由它建立
+#    190  pwm-mtk-disp.ko
+#    193  leds-mtk.ko            ← /sys/class/leds/lcd-backlight 由它注册
+#
+# 关键（v5）：这整张表必须由 skyward 自己加载。OrangeFox 的 init 只 insmod 了
+# nxp_i2c / p73 两个，其余 264 个原本由 TWRP 二进制加载。skyward 不加载它们，
+# 就既没有 DRM 也没有背光，屏幕永远不亮。
+# 本表 = modules.load.recovery 全量 + nxp_i2c/p73（OFX 注入）+ 触摸/振动。
+#
+# 实测：触摸/振动驱动不在 platform ramdisk，来自 vendor_dlkm：
+#   xiaomi_touch_dash.ko → nt38771_touch_dash.ko（依赖，须按此序）
+#   si_haptic.ko / fs3002_haptic.ko（两驱动并存，见 [haptics]）
+# 打包时已把这 4 个 ko 复制进 platform ramdisk 的 lib/modules/，不依赖分区挂载。
+load = [
+    "bootprof", "mrdump", "aee_aed", "monitor_hang",
+    "mkp", "dbgtop-drm", "irq-dbg", "dbg_error_flag",
+    "bus-parity", "last_bus", "mtk_sync", "mtk_disp_notify",
+    "log_store", "mtk_printk_ctrl", "nvmem_mtk-devinfo", "mtk_wdt",
+    "timer-mediatek", "aee_hangdet", "sec-rng", "device-apc-common",
+    "device-apc-mt6991", "mtk-mbox-mailbox", "tinysys-scmi", "ise_lpm",
+    "pinctrl-mtk-v2", "pinctrl-mt6991", "smap-mt6991", "mtk-dvfsrc-regulator",
+    "mtk-emi", "mtk-dvfsrc", "mtk-scpsys", "mt6991_dcm",
+    "mtk_dcm", "clk-common", "clk-fmeter-mt6991", "iommu_debug",
+    "smmu_secure", "arm_smmu_v3", "mm-fake-engine", "clk-chk-mt6991",
+    "mtk-scpsys-mt6991-spm", "vcp_status_v2", "vcp_v2", "clk-mt6991",
+    "clk-mt6991-adsp", "clk-mt6991-cam", "clk-mt6991-img", "clk-mt6991-mmsys",
+    "clk-mt6991-peri", "clk-mt6991-mdpsys", "clk-mt6991-bus", "clk-mt6991-vcodec",
+    "mtk-ise-mailbox", "ise-trusty", "ise-trusty-log", "ise-trusty-ipc",
+    "ise-trusty-virtio", "mtk-pmic-wrap", "mtk-spmi-pmic", "spmi-mtk-pmif",
+    "mt6316-regulator", "mt6363-regulator", "mt6373-regulator", "pinctrl-mt6373",
+    "pinctrl-mt6363", "pinctrl-mtk-common-v2_debug", "mt6379-regulator", "mt6681-regulator",
+    "sgm38120", "wl2868c", "mtk-dvfsrc-helper", "mtk-dvfsrc-devfreq",
+    "mtk-scpsys-mt6991-mmpc", "mtk-vmm-notifier-mt6991", "pd-chk-mt6991", "mtk_dramc",
+    "mtk-hw-semaphore", "mtk-smi", "mtk-smi-dbg", "mtk-icc-core",
+    "mtk-mmdvfs-ftrace", "mtk-mmdvfs-v3", "mtk-mmdvfs", "mtk-mmdvfs-debug",
+    "mmqos-common", "mmqos-mt6991", "mtk-mmdebug-vcp", "mtk_iommu_util",
+    "system_heap", "mtk-cmdq-drv-ext", "cmdq-platform-mt6991", "mdp_drv_mt6991",
+    "mtk-mml", "mtk-mml-mt6991", "cmdq_helper_inf", "rt4831a_drv",
+    "miev", "mtk_panel_ext", "panel-p10u-42-02-0a-dsc-vdo", "panel-p10u-36-02-0b-dsc-vdo",
+    "mtk-afe-external", "drm_dma_helper", "drm_display_helper", "mediatek-drm",
+    "aee_rs", "mmprofile", "mtk_vdisp_v2", "mtk_dpc_v2",
+    "mtk-uart-apdma", "8250_mtk", "mt6685-core", "mt6685-audclk",
+    "mt6681-core", "mt6681-auxadc", "clkbuf", "ffa_v11",
+    "teeperf", "mitee", "mtk-spmi-pmic-adc", "mca_event",
+    "mca_sysfs", "mca_log", "mca_charge_mievent", "mt6379s",
+    "industrialio-triggered-buffer", "kfifo_buf", "mt6379-adc", "mt6375-auxadc",
+    "rpmb", "rpmb-mtk", "cqhci", "mtk-mmc-dbg",
+    "mtk-mmc", "pmic_lbat_service", "pmic_lvsys_notify", "mtk_low_battery_throttling",
+    "mtk_battery_oc_throttling", "phy-mtk-ufs", "ufs-mediatek-mod-ise", "ufs-mediatek-dbg",
+    "mi_memory", "blocktag", "hwid", "simtray",
+    "pidmap", "mtk-pmic-keys", "mtk-i3c-i2c-wrap", "i2c-mt65xx",
+    "mtk-i3c-master-mt69xx", "spi-mt65xx", "phy-mtk-nxp-eusb2-repeater", "phy-mtk-mt6379-eusb2-repeater",
+    "phy-mtk-xsphy", "xhci-mtk-hcd-v2", "mtu3", "usb_boost",
+    "mux_switch", "ps5170", "usb_dp_selector", "extdev_io_class",
+    "rt4803", "rtc-mt6685", "adapter_class", "charger_class",
+    "mtk_charger_algorithm_class", "ufcs_class", "ufcs_mt6379", "mt6379-chg",
+    "pd_dbg_info", "tcpc_class", "tcpc_mt6379", "mtk_chg_type_det",
+    "mtk_pd_adapter", "mtk_ufcs_adapter", "mtk_pep40", "mtk_pep45",
+    "mtk_pd_charging", "mtk_pep20", "mtk_pep", "mtk_charger_framework",
+    "mtk_2p_charger", "rt_pd_manager", "bq28z610", "sc8585_charger",
+    "pd_single_cp_manager", "hl7603", "mtk_ut_test", "mt6379-battery",
+    "pwm-mtk-disp", "phy-mtk-pcie", "pcie-mediatek-gen3", "leds-mtk",
+    "leds-color21024", "leds-mtk-disp", "leds-mtk-pwm", "v4l2-flash-led-class",
+    "extcon-mtk-usb", "tcpci_late_sync", "mtk-mminfra-debug", "mtk-mminfra-imax",
+    "reset-ti-syscon", "mtk_bp_thl", "mtk_cpu_power_throttling", "arm_dsu_pmu",
+    "emi", "emi-mpu", "smpu", "smpu-hook-v1",
+    "emi-slb", "slc-parity", "usb_meta", "mtk-socinfo",
+    "cache-parity", "gic-ram-parity", "systracker", "pkvm_tmem",
+    "pkvm_mgmt", "pkvm_smmu", "pkvm_mkp", "libarc4",
+    "rfkill", "mtk_et", "ccmni", "rps_perf",
+    "mtk_mbraink_bridge", "reboot-mode", "syscon-reboot-mode", "spmi-mtk-mpu",
+    "mtk_battery_manager", "mtk_dynamic_loading_throttling", "mtk_pbm", "mtk_mdpm",
+    "mddp", "mtk_rpmsg_mbox", "mtk-mbox", "mtk_tinysys_ipi",
+    "cam_fs", "uarthub_drv", "sec", "uload_ind",
+    "load_track", "clk-dbg-mt6991", "mtk-mmdvfs-v3-start", "ccci_util_lib",
+    "ccci_auxadc", "ccci_md_all", "mi_t1_gpio", "zsmalloc",
+    "zram", "perf_helper", "mi_wq_dynamic_priority", "mi_stack",
+    "mi_ubt", "mi_ubt_test", "debug_ext", "mtd_blkdevs",
+    "ofpart", "mtdoops", "block2mtd", "chipreg",
+    "mtdblock", "mtd", "dynamic_readahead", "nxp_i2c",
+    "p73", "xiaomi_touch_dash", "nt38771_touch_dash", "si_haptic",
+    "fs3002_haptic",
+]
+
+[touch]
+# [实测] 驱动 ko：xiaomi_touch_dash.ko → nt38771_touch_dash.ko（modules.load 尾部按此序）。
+# [实测] /sys/class/touch/ 下只有 touch_dev 一个目录 —— 路径坐实。
+# [实测] getevent：触摸屏 input 为 "NVTCapacitiveTouchScreen"（event4），
+#        ABS_MT_POSITION_X max=127999 / Y max=277199（= 分辨率×100，0.01 精度）。
+# [实测] ro.vendor.touchfeature.type=247；超声波屏下指纹（ro.hardware.fp.fod/tddi=true）。
+#
+# ⚠️ 关键（v4）：dash 的触摸不是原生 evdev。MTK 的 xiaomi_touch 驱动只建
+#    /dev/xiaomi-touch 字符设备，evdev 事件由 OrangeFox 的 dash_touch_report
+#    守护进程翻译出来（rootfs 里的 runtamoboot.sh → dash-touch-start.sh 负责拉起）。
+#    所以 skyward 能在 /dev/input 看到触摸的前提是：OFX 的那条脚本链跑通了。
+#
+# ⚠️ 下面这条 writes 在真机上**不保证存在**。证据：OFX 自己的
+#    /system/bin/dash-touch-start.sh 第 39 行写的是
+#        if [ -e /sys/class/touch/touch_dev/enable_touch_raw ]; then
+#    即 OrangeFox 也要先判断。skyward 原来无条件写、写失败就 bail，
+#    这会在页面还没画出来时直接退出 —— 已改成写不进去只记 kmsg。
+writes = [{ path = "/sys/class/touch/touch_dev/enable_touch_raw", value = "0" }]
+
+# [firmware] 整段移除 —— 见《第八版根因定案.md》，这是 v6 全盘失效的真因。
+# 上游 skyward-block/src/fstab.rs:9 写死只读高通的
+#     /vendor/etc/fstab.qcom 与 /odm/etc/fstab.qcom
+# dash 是 MTK（MT6991），这两个文件都不存在，fstab 表恒为空。
+# 因此任何 fstab::mount(name) 都会 bail!
+#     "the phone's own table does not mount <name>"，
+# 而 bring_up() 是 ? 串联：mount_firmware() 一失败就提前返回，
+# 后面的 load_modules(269 个) / services::start(7 个 HAL) / keys::start
+# 全部不执行 —— 触摸、振动、WiFi、解密、息屏唤醒同时失效。
+# 在给出 MTK fstab 适配（fstab.emmc / recovery.fstab）之前，
+# 所有会触发 fstab::mount 的配置项一律留空，让 bring_up() 跑完。
+
+[partitions]
+# [实测] 真机 /dev/block/by-name/ 全量确认（当前槽 _a）：
+#   vendor_boot_a=sdc38 / vendor_boot_b=sdc73    ← 无 recovery 分区
+#   boot_a=sdc37 boot_b=sdc72 / init_boot_a=sdc39 init_boot_b=sdc74
+#   dtbo_a=sdc40 dtbo_b=sdc79 / super=sdc95 / userdata=sdc96 / metadata=sdc16
+#   misc=sdc1 vb=sdc2 para=sdc3 expdb=sdc4 frp=sdc5
+#   vbmeta_a=sdc10 vbmeta_b=sdc13 / vbmeta_system_a=sdc11 vbmeta_system_b=sdc14
+#             vbmeta_vendor_a=sdc12 vbmeta_vendor_b=sdc15
+#   preloader_raw_a/b -> /dev/block/mapper/pl_a, pl_b（dm 映射，备份时按 mapper 节点处理）
+# [实测] OrangeFox init.recovery.crypto.rc / persist.rc：
+#        /dev/block/by-name/persist -> /mnt/vendor/persist (ext4)，再 bind 到 /persist。
+#        fstab.emmc 另有 protect1/protect2/nvdata/nvcfg 四个 ext4 分区。
+# 同上：persist 也会走 fstab::mount，在空表上同样 bail。v7 先清空。
+mounted = []
+
+[logd]
+# [待抓] 上游为高通 recovery logd 补 libsysutils / libcap。MTK ramdisk 的 logd
+#        依赖未核对，先留空，真机看 logd 是否反复重启再决定。
+libraries = []
+
+# ---------------------------------------------------------------------------
+# 服务清单 —— 二进制路径来自真机 /vendor/bin/hw/ 实测清单（06_hw_bins.txt），
+# ready_service 来自 VINTF manifest（03_manifest_dir.xml）+ service list
+# （04_services_root.txt）双重确认，全部为 AIDL 注册名。
+# 注意：这些 HAL 的 .rc 文件里都不写 interface 声明行（grep 实测无命中），
+#       manifest 是唯一权威声明源 —— 这也是为什么此前只有 lshal/service 能拿到。
+# ---------------------------------------------------------------------------
+
+# TEE 客户端守护进程；MTEE 的入口，必须先起。
+# [实测] 系统内服务名 init.svc.tee-supplicant=running；OrangeFox 同名。
+# [实测-推断] /vendor/bin/hw/ 清单里没有它，与 OrangeFox 一致放在 /vendor/bin/。
+[[service]]
+path = "/vendor/bin/tee-supplicant"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "system"
+groups = ["system", "oem_1068", "nfc"]
+capabilities = ["SYS_RAWIO"]
+
+# KeyMint（MTEE）—— AIDL version 3，非 HIDL。
+# [实测] 二进制 android.hardware.security.keymint@3.0-service.mitee 存在于 /vendor/bin/hw/。
+# [实测] 注册名 android.hardware.security.keymint.IKeyMintDevice/default（service list 第 106 行）。
+# [实测] manifest: <hal format="aidl"><version>3</version><fqname>IKeyMintDevice/default</fqname>。
+# [实测] OrangeFox 额外 setenv LD_PRELOAD /system/lib64/libdash_libcxx_compat.so（自带兼容层），
+#        Skyward 直接拉原厂二进制时需确认是否同样需要。
+[[service]]
+path = "/vendor/bin/hw/android.hardware.security.keymint@3.0-service.mitee"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "system"
+groups = ["system", "drmrpc"]
+ready_service = "android.hardware.security.keymint.IKeyMintDevice/default"
+
+# Gatekeeper（MTEE）—— AIDL。
+# [实测] 二进制 android.hardware.gatekeeper-service.mitee 存在于 /vendor/bin/hw/。
+# [实测] 注册名 android.hardware.gatekeeper.IGatekeeper/default（service list 第 56 行）。
+# [实测] ro.hardware.gatekeeper=mitee。
+[[service]]
+path = "/vendor/bin/hw/android.hardware.gatekeeper-service.mitee"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "system"
+groups = ["system"]
+ready_service = "android.hardware.gatekeeper.IGatekeeper/default"
+
+# Weaver：NXP 安全元件（p73），AIDL version 2。
+# [实测] 二进制 android.hardware.weaver-service.nxp 存在于 /vendor/bin/hw/。
+# [实测] 注册名 android.hardware.weaver.IWeaver/default（service list 第 120 行）。
+# [实测] manifest: <hal format="aidl"><version>2</version><fqname>IWeaver/default</fqname>。
+# 前置条件：先 insmod nxp_i2c.ko / p73.ko，等 /dev/p73、/dev/tee0 出现。
+[[service]]
+path = "/vendor/bin/hw/android.hardware.weaver-service.nxp"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "oem_2902"
+groups = ["system", "drmrpc"]
+capabilities = ["WAKE_ALARM"]
+ready_service = "android.hardware.weaver.IWeaver/default"
+
+# 小米自己的 secure_element HAL，为 NXP weaver / OMAPI 提供通道。
+# [实测] 二进制 vendor.xiaomi.hardware.secure_element-service 存在于 /vendor/bin/hw/；
+#        另有 android.hardware.secure_element@1.2-service-mediatek 与
+#        init.svc.mtk_secure_element_hal_service=running。
+# [实测] service list 中 ISecureElement 有 SIM1/SIM2/eSE1 三个实例（点号 AIDL 命名）。
+# [实测-推断] NXP p73 是内嵌 SE，OrangeFox 的 OMAPI 桥走 eSE，故取 eSE1；
+#             实例归属用 `ps -A | grep secure_element` 一条命令可最终定案。
+[[service]]
+path = "/vendor/bin/hw/vendor.xiaomi.hardware.secure_element-service"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "system"
+groups = ["system", "oem_1068", "nfc"]
+ready_service = "android.hardware.secure_element.ISecureElement/eSE1"
+
+# OrangeFox 自己加的桥接程序（/system/bin/dash_omapi_bridge），
+# 不是 AOSP 标准件。Skyward 已有 skyward-omapi crate，可能可以直接替换掉它。
+# [实测] OMAPI 框架服务注册名 android.se.omapi.ISecureElementService/default。
+[[service]]
+path = "/system/bin/dash_omapi_bridge"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "system"
+groups = ["system", "oem_1068", "nfc"]
+
+# Boot control：MTK 原厂实现。
+# [实测] 原厂二进制是 /vendor/bin/hw/android.hardware.boot-service.mtk（06_hw_bins）。
+#        ⚠️ v1/v2 写的 mtk_recovery 是 OrangeFox 自己 ramdisk 里的重命名变体，勿混用。
+# [实测] 注册名 android.hardware.boot.IBootControl/default
+#        （manifest + service list 第 51 行 + OrangeFox bootctl.rc 三重一致）。
+[[service]]
+path = "/vendor/bin/hw/android.hardware.boot-service.mtk"
+libraries = ["/vendor/lib64", "/system/lib64"]
+user = "root"
+groups = ["root"]
+ready_service = "android.hardware.boot.IBootControl/default"
+
+# [实测-备注] /vendor/bin/hw/ 里还有 android.hardware.security.keymint-service.strongbox.nxp
+#             （ro.strongbox.manufacturer=NXP），对应 IKeyMintDevice/strongbox 与
+#             ISharedSecret/strongbox。recovery 解密走 default 实例，strongbox 不需要拉起。
+# [实测-备注] keystore2 全套服务在系统侧实测：android.system.keystore2.IKeystoreService/default、
+#             android.security.{authorization,maintenance,metrics,legacykeystore}。
+
+[wlan]
+# ===========================================================================
+# v10 / xaga 天玑平台 WiFi bring-up 移植
+#   参考 BkaNeko/xaga-skyward 提交 8a098fda
+#   "feat(wlan): bring the WLAN up through the phone's own programs"
+#
+# ⚠️ 与 xaga（mt6895 / Redmi Note 11T Pro）的三处硬差异，绝不照抄：
+#   1. supplicant 是 **AIDL v3** android.hardware.wifi.supplicant.ISupplicant/default，
+#      不是 xaga 的 HIDL @1.4::ISupplicant/default。证据：03_manifest_dir.xml
+#      第 266-269 行 <hal format="aidl"> + 04_services_root.txt 第 122 行。
+#      填成 HIDL 会被 description.rs 描述成 hwbinder 服务，注册必被拒。
+#   2. 驱动是 wlan_drv_gen4m_6991_6639_new9gen2（MT6991 + MT6639 new9gen2），
+#      不是 wlan_drv_gen4m_6895。证据：08_modules_dep.txt 第 33 行、
+#      07_modules_load.txt 第 140 行。
+#   3. libraries 不引入 /vendor/lib64/vndk（xaga 需要，dash 未证实）。
+#
+# 整段只在「用户打开 WiFi 页」或 `skyward wlan --config /skyward/device.toml`
+# 时执行，bring_up() 完全不碰它。
+# ⚠️ v10 真机证伪了「最坏只是 WiFi 页报错、不会黑屏」这句：写
+#    /dev/wmtWifi=1 触发 connsys 上电后，recovery 里没有 conninfra_loader /
+#    wlan_assistant 喂固件与校准，芯片挂起；再叠加 5×20s 等待与「息屏唤醒
+#    未修」，真机表现为 UI 卡死→黑屏→强制重启（v10-result 第 6 组之后
+#    第 7/8/9/10 组全 no devices）。v11 起 writes 清空、attempts=1，
+#    宁可 WiFi 明确失败，也绝不拖垮整机。[[service]] 同理，见本段末尾。
+# ===========================================================================
+# [v12 定案 — WiFi 先止血，绝不拖垮整机]
+#   v10/v11 真机：打开 WiFi 页 → UI 卡死 → 黑屏 → 电脑反复接入拔出(强制重启)。
+#   亲自核实：这 8 个 connsys/wlan ko **不在** [modules].load 的 269 项里
+#   （开机一次都没 insmod），WiFi 页/CLI 是首次 insmod。崩点是 wlan.rs:700
+#   的 skyward_modules::load()：它 finit_module 给 MT6639 上电，而 recovery
+#   里没有 conninfra_loader / wlan_assistant 喂
+#   WIFI_RAM_CODE_MT6639_new9gen2_1.bin 与校准数据 → chip hang →
+#   watchdog / HW reset → USB 反复枚举。v11 只清 writes，改错了地方。
+#
+#   v12 做法：四字段全清空，让 bring_up_driver() 里
+#     for path in skyward_modules::load(modules, &cfg.modules)
+#   循环 0 次（names=[] → 一次 finit_module 都不调用），彻底不碰内核；
+#   不挂载、不改属主、不等 nvram prop、不写 /dev/wmtWifi。
+#   wlan.rs 首行另有显式短路：modules 为空即 bail
+#   "WLAN bring-up is disabled on this device (dash v12)"，0 秒明确失败，
+#   WiFi 页报错但整机照常用。这是止血，不是把 WiFi 修好。
+#
+#   WiFi 真正能连：须先以 [[service]] 拉起 conninfra_loader /
+#   wlan_assistant 托底喂固件，再分步恢复 modules/mounts/writes。
+#   vendor_a_root 已坐实两个二进制与固件真实存在；启动参数与 oneshot
+#   属性待完整 OTA 的系统侧 init rc 通读后定案，见第十七版文档。
+modules = []
+nodes = []
+mounts = []
+writes = []
+attempts = 1
+
+# firmware 留空：xaga 同样留空。dash 的 WIFI_RAM_CODE_MT6639_new9gen2_1.bin
+# 等由 conninfra_loader 从 /vendor/firmware 取，main.rs 已写
+# force_sysfs_fallback=1。用户上传的 固件.zip 里 connsys_wifi_a/b 全 0、
+# com.android.wifi.img 是 Mainline APEX，都不是固件源，不能拿来填这里。
+
+interface = "wlan0"
+supplicant = "/vendor/bin/hw/wpa_supplicant"     # [实测] 06_hw_bins 清单内含 wpa_supplicant
+libraries = ["/vendor/lib64", "/system/lib64"]
+service = "android.hardware.wifi.supplicant.ISupplicant/default"   # [实测] AIDL，非 HIDL
+probe = "http://connect.rom.miui.com/generate_204"
+
+# ⚠️ 本轮**不新增** [[service]] 的 conninfra_loader / wlan_assistant。
+#    services.rs:108 对每个 [[service]] 做 is_file() 检查，路径不存在直接
+#    bail!("{} is missing") —— 那是 bring_up() 的 ? 串联，会整机黑屏。
+#    OFX ramdisk 的 system/etc/init/*.rc 里这两个服务零命中，recovery 的
+#    init 也不解析系统分区的 rc，ctl.start 同样拉不起来。
+#    真机先坐实二进制路径（诊断v10.bat 第 7 组），再在 v11 补 [[service]]。
+
+[update]
+server = "https://update.miui.com/updates/miotaV3.php"   # [推测] 国行沿用
+
+[stock]
+# [实测] 官方完整 OTA（HTTP 200、8,644,649,513 字节、支持 Range、ZIP64）。
+# [实测] 真机 ro.mi.os.version.incremental = OS4.0.4.0.XPLCNXM，与该包版本严格一致，底座无串。
+version = "OS4.0.4.0.XPLCNXM"
+package = "https://bkt-sgp-miui-ota-update-alisgp.oss-ap-southeast-1.aliyuncs.com/OS4.0.4.0.XPLCNXM/dash-ota_full-OS4.0.4.0.XPLCNXM-user-17.0-81a5c2e9c7.zip"
+# ⚠️ 上游此字段是「从 OTA 中取出的 recovery 分区的 SHA-256」。
+#    本机不存在 recovery 分区。下面这个值是实测解出的 vendor_boot 分区
+#    整体 SHA-256（已与 manifest 的 new_partition_info hash 逐字节比对通过），
+#    仅作校验基准；skyward-pack 需要改成定位 vendor_boot 内的 RECOVERY ramdisk。
+recovery = "99ed4acb9eb3b43e926b2bdb8df60013faa55a7cf9269275c7e8573390f103bc"
+# [实测] 从同一 OTA 解出的 vendor_dlkm 分区镜像校验值（25,432,064 B，EROFS v1，
+#        deflate 压缩），供打包器取模块时校验：
+#        246f97eaca89e1e1ec4b49e08c6b0b707c68d8c20cc0ebcca4419210eb619f8b
+
+[haptics]
+# [实测] getevent：si_haptic 为 FF 力反馈 input 设备（event3，FF_RUMBLE / FF_PERIODIC /
+#        FF_CONSTANT / FF_CUSTOM / FF_GAIN 全支持）。
+# [实测] modules.load 同时加载 fs3002_haptic.ko(86) 与 si_haptic.ko(138)；两驱动并存。
+# [实测] 系统侧 vibrator 走 AIDL：android.hardware.vibrator.IVibrator/default +
+#        /vibratorfeature + android.frameworks.vibrator.IVibratorControlService/default。
+# [实测] init.recovery.haptics.rc（OrangeFox）：I2C 双马达，resonant_frequency=170，
+#        路径 /sys/bus/i2c/drivers/fs_haptic/1-0076 与 /sys/bus/i2c/drivers/sih_haptic_688X/1-006b。
+# ⚠️ skyward 的 haptics 代码按 qcom-hv-haptics 读取，这里要改实现。
+# ⚠️ OrangeFox 用 dash_vibrator_launcher 释放 ROM 挂载并 bind recovery 的 vendor/odm，
+#    再让原厂 AIDL vibrator 读 ODM 绝对路径——这套绕法 Skyward 也要照做或另想办法。
+# [实测] OrangeFox 的 dash-haptic-probe.sh 判定条件就是
+#        [ -e "$motor/custom_wave" ]，并 chown 了 f0_save / osc_save / custom_wave
+#        三个节点 —— f0_save 存的就是谐振频率（0.1 Hz 为单位）。
+#        原先指向驱动目录本身，skyward 读目录必然失败，震动永远不工作。
+resonance = "/sys/bus/i2c/drivers/sih_haptic_688X/1-006b/f0_save"
+strength = { lightest = 0.25, strongest = 0.75 }   # [推测] 沿用上游比例，未实测
+
+[backup]
+# [实测] 真机 by-name 全量确认存在的校准/基带分区（均只备份、不写入）：
+#   nvram=sdc53  nvdata=sdc7  nvcfg=sdc6  persist=sdc9  proinfo=sdc51
+#   protect1=sdc17  protect2=sdc18  seccfg=sdc19  sec1=sdc50  otp=sdc20
+#   md_sec=sdc8  efuse=sdc52  modem_a=sdc21 / modem_b=sdc56
+#   connsys_wifi_a/b=sdc43/76  connsys_bt_a/b=sdc42/75  connsys_gnss_a/b=sdc44/77
+#   preloader_raw_a/b -> /dev/block/mapper/pl_a, pl_b（dm 映射，按 mapper 节点读）
+# ⚠️ seccfg / sec1 / otp / efuse 属安全熔丝区，默认只备份不写。
+# [实测] 加密状态：ro.crypto.state=encrypted / ro.crypto.type=file（FBE）/
+#        ro.crypto.metadata.enabled=true / filenames_mode=aes-256-cts —— 与 fstab
+#        的 aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized 一致，解密必须走全套 HAL。
+efs = ["nvram", "nvdata", "nvcfg", "protect1", "protect2", "persist", "proinfo", "modem"]
+# [待抓] 上游列出高通 TEE 相关目录；MTK 是 mitee / MVPU，路径不同。
+data_skipped = []
+
+[wipe]
+# [待抓] 上游列的是高通 diag / ramdump 等目录，MTK 路径不同。
+logs = []
+
+# ===========================================================================
+# v10 变更摘要（2026-11-15）—— xaga 天玑平台 WiFi / 解密移植
+#
+# 【解密 -2147483647】代码级修复，已编译进新二进制，本配置无需额外字段：
+#   - skyward-binder/src/parcel.rs：binder Parcel header 由 RECO 改为 SYST。
+#     真机报错 "-2147483647" 是 AOSP binder_status.h 的 STATUS_BAD_TYPE
+#     (0x80000001)：系统/vendor 的 libbinder enforceInterface() 不认 RECO，
+#     直接回 BAD_TYPE。xaga 的 SYST / VNDR 标记才是系统侧认可的 ABI 头。
+#     出错点是 secure.rs::publish_descriptions() 里的 declared()，属
+#     bring_up() 的 ? 串联 —— 所以此前是「解密失败 + 后续服务全断」。
+#   - skyward-binder/src/driver.rs：新增 mount()，修 binderfs 挂载判断
+#     （以 /dev/binderfs/binder 是否存在为准，避免重复挂载换掉 driver）。
+#   - skyward/src/main.rs：bring_up() 开头显式 ctl.start servicemanager，
+#     等 init.svc.servicemanager=running，再继续模块 / 服务 / 描述发布。
+#   - skyward-block/src/fstab.rs：不再写死 fstab.qcom，改为扫描
+#     /vendor/etc 与 /odm/etc 下所有 fstab.*（含 fstab.emmc / recovery.fstab）。
+#   - skyward-programs/src/description.rs：带 @版本名的服务描述为 HIDL，
+#     点号 AIDL 名为 AIDL。dash 全是 AIDL，这条路现在才走对。
+#   - skyward-crypto/src/encryption.rs：fstab 条目无 metadata_encryption、
+#     但有 keydirectory 时推断 aes-256-xts。dash 是 FBE + metadata 加密，
+#     与上面的 fstab 扫描是同一条解密链路的两半，缺一不可。
+#   - skyward-crypto/src/data.rs：unmap() 先 dm::status(MAPPED)，已卸载
+#     则直接返回，recovery 重启后重复卸载不再报错。
+#
+# 【未移植 / 明确不做】
+#   1. [[service]] 的 conninfra_loader / wlan_assistant：路径未坐实，
+#      services.rs:108 会 bail 并牵连 bring_up() 黑屏。见 [wlan] 段末尾。
+#   2. [[owners]] 的 RPMB 节点（xaga 提交 bfc33ce2）：main.rs::hand_over()
+#      对节点不做存在性检查，chown 失败即 ? 冒泡 → bring_up() 黑屏。
+#      真机 dmesg 只证实 0:0:0:49476 是 UFS RPMB well-known LUN，
+#      /dev/rpmb0 在 recovery 里是否生成未证实，风险不对等，v11 再说。
+#
+# 【息屏唤醒】v9 的「背光 None + 禁 s2idle」判断已被真机 dmesg 推翻
+#   （lcd-backlight 反复被写 1966 / 0），v10 不复用该结论，另行单独修。
+# ===========================================================================

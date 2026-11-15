@@ -1,0 +1,16 @@
+[package]
+name = "skyward-bootimg"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+abootimg-oxide = "0.5.2"
+anyhow = { workspace = true }
+cpio = "0.4.1"
+libc = { workspace = true }
+lz4_flex = "0.14.0"
+zstd = "0.14.3"
+
+[dev-dependencies]
+tempfile = "3.27.0"
